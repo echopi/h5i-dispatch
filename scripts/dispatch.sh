@@ -90,7 +90,13 @@ PROMPT="$(mktemp)"
 CLEANUP_WT=0
 cleanup() {
   rm -f "$PROMPT"
-  [ "$CLEANUP_WT" = 1 ] && { git worktree remove --force "$WT" 2>/dev/null; git branch -D "$BRANCH" 2>/dev/null; }
+  if [ "$CLEANUP_WT" = 1 ]; then
+    git worktree remove --force "$WT" 2>/dev/null || true
+    git branch -D "$BRANCH" 2>/dev/null || true
+  fi
+  # MUST end on status 0: under `set -e`, a non-zero last command in an EXIT trap
+  # overrides `exit "$RC"` → the script exits 1 even on success (and masks real RC).
+  return 0
 }
 trap cleanup EXIT
 

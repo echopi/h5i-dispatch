@@ -1,6 +1,6 @@
 ---
 name: h5i-dispatch
-version: 0.3.0
+version: 0.3.1
 description: 把一个隔离、可并行的子任务派给另一个 agent(codex/claude/qoder/ 或任意 Claude-Code-harness)后台执行，经 h5i(基于 git ref 的消息总线)+ git worktree 通信，worker 跑完自动唤主 session 验证回报。显式触发：派给另一个 agent、并行做 X、dispatch、后台让 codex/claude/qoder 去做、让另一个 agent 写 X、agent 通信派活、并行派一个 worker。**主动识别(不必等用户明说)**：当 agent 发现手头活可拆成 ≥2 个互不相干、可隔离的子任务——跨端补齐 / 补多端单测 / 修 N 个独立用例 / 面临"先做 A 还是 B"的独立任务分叉 / 长耗时隔离子活——应主动提示用户"这块可并行派给 worker"(只提示不自动派)。
 ---
 
