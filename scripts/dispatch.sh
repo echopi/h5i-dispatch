@@ -64,14 +64,17 @@ if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
 fi
 
 # isolation pre-check: warn if task paths overlap with dirty files in the main worktree (heuristic, not fatal)
-# extract path-like tokens from task file (segments separated by /)
-_task_paths="$(grep -oE '([a-zA-Z0-9_-]+/)+[a-zA-Z0-9_.-]+' "$TASK_FILE" | sort -u || true)"
+# extract path-like tokens from task file, keep only tracked files/directories to avoid URL/noise false positives
+_task_paths="$(grep -oE '([a-zA-Z0-9_-]+/)+[a-zA-Z0-9_.-]+' "$TASK_FILE" | while IFS= read -r _candidate; do
+  # accept if it is a tracked file, or a directory that contains tracked files
+  git -C "$ROOT" ls-files --error-unmatch "$_candidate" >/dev/null 2>&1 || [ -n "$(git -C "$ROOT" ls-files "$_candidate" | head -1)" ] || continue
+  echo "$_candidate"
+done | sort -u || true)"
 if [ -n "$_task_paths" ]; then
   _dirty=""
   while IFS= read -r _p; do
-    _dir="$(dirname "$_p")"
-    # check only against main worktree (ROOT), not $WT (doesn't exist yet)
-    _status="$(git -C "$ROOT" status --porcelain -- "$_p" "$_dir" 2>/dev/null || true)"
+    # check the exact path (file or directory) against the main worktree dirty status
+    _status="$(git -C "$ROOT" status --porcelain -- "$_p" 2>/dev/null || true)"
     [ -n "$_status" ] && _dirty="${_dirty} $_p"
   done <<< "$_task_paths"
   if [ -n "$_dirty" ]; then
