@@ -50,8 +50,10 @@ esac
 ROOT="$(git rev-parse --show-toplevel)"
 WT="$ROOT/.claude/worktrees/$WT_NAME"
 BRANCH="dispatch/$WT_NAME"
-# anti-collision: timestamp + random suffix prevents races between concurrent dispatches
-LAST="${TMPDIR:-/tmp}/dispatch-$WT_NAME-$(date +%s)-$RANDOM-last.txt"
+# anti-collision: timestamp + random suffix prevents races between concurrent dispatches.
+# strip trailing slash from TMPDIR (macOS sets it to .../T/) so we don't get a double slash.
+TMP_DIR="${TMPDIR:-/tmp}"; TMP_DIR="${TMP_DIR%/}"
+LAST="$TMP_DIR/dispatch-$WT_NAME-$(date +%s)-$RANDOM-last.txt"
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || { echo "FATAL: invalid branch name: $BRANCH"; exit 2; }
 TASK="$(cat "$TASK_FILE")"
 
@@ -75,10 +77,10 @@ if [ -n "$_task_paths" ]; then
   while IFS= read -r _p; do
     # check the exact path (file or directory) against the main worktree dirty status
     _status="$(git -C "$ROOT" status --porcelain -- "$_p" 2>/dev/null || true)"
-    [ -n "$_status" ] && _dirty="${_dirty} $_p"
+    [ -n "$_status" ] && _dirty+=$'\n'"  $_p"
   done <<< "$_task_paths"
   if [ -n "$_dirty" ]; then
-    echo "WARN: task paths overlap with main worktree dirty files:$_dirty"
+    printf 'WARN: task paths overlap with main worktree dirty files:%s\n' "$_dirty"
     echo "WARN: review before proceeding to avoid merge conflicts"
   fi
 fi
@@ -106,7 +108,7 @@ cat > "$PROMPT" <<EOF
 You are agent "$WORKER_ID" on an h5i git message bus, inside a git worktree of this repo (cwd). h5i = $H5I
 1. Read your task:  $H5I msg history --plain   — the HANDOFF line addressed to "$WORKER_ID" is your task (obey its scope constraints exactly; only touch allowed paths).
 2. Execute fully in THIS worktree.
-3. For long tasks, send a PROGRESS heartbeat after each major phase:
+3. For long tasks, send a PROGRESS heartbeat after each major phase. It MUST go through h5i (the dispatcher only sees the bus, not your stdout — printing PROGRESS to stdout alone is invisible):
    H5I_AGENT=$WORKER_ID $H5I msg send $DISPATCHER "PROGRESS: <phase> <pct>% <one-line note>"
 4. On completion, send a structured DONE message:
    H5I_AGENT=$WORKER_ID $H5I msg send $DISPATCHER 'DONE: {"status":"done","files_changed":["path1","path2"],"summary":"...","verification":"..."}'
@@ -144,7 +146,8 @@ case "$KIND" in
         --allowedTools "$WORKER_ALLOWED_TOOLS" ) > "$LAST" 2>&1; RC=$?
     ;;
   qoder)
-    ( cd "$WT" && "${TOPFX[@]}" "$WORKER_BIN" -p "$(cat "$PROMPT")" -w "$WT" \
+    # cd "$WT" already sets the cwd; qoder's -w would be redundant (kept lean to match the claude branch)
+    ( cd "$WT" && "${TOPFX[@]}" "$WORKER_BIN" -p "$(cat "$PROMPT")" \
         --allowed-tools "$WORKER_ALLOWED_TOOLS" --dangerously-skip-permissions ) > "$LAST" 2>&1; RC=$?
     ;;
 esac
