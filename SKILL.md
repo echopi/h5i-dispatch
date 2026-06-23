@@ -1,12 +1,14 @@
 ---
 name: h5i-dispatch
-version: 0.3.1
-description: 把一个隔离、可并行的子任务派给另一个 agent(codex/claude/qoder/ 或任意 Claude-Code-harness)后台执行，经 h5i(基于 git ref 的消息总线)+ git worktree 通信，worker 跑完自动唤主 session 验证回报。显式触发：派给另一个 agent、并行做 X、dispatch、后台让 codex/claude/qoder 去做、让另一个 agent 写 X、agent 通信派活、并行派一个 worker。**主动识别(不必等用户明说)**：当 agent 发现手头活可拆成 ≥2 个互不相干、可隔离的子任务——跨端补齐 / 补多端单测 / 修 N 个独立用例 / 面临"先做 A 还是 B"的独立任务分叉 / 长耗时隔离子活——应主动提示用户"这块可并行派给 worker"(只提示不自动派)。
+version: 0.3.2
+description: 把 scope 清晰、可隔离的子任务后台派给另一个独立 agent(codex/claude/qoder/ 任意 Claude-Code-harness)并行执行——主 session 不阻塞、多 agent 独立配额并行、worker 探索/试错的中间过程不回灌主上下文(token 用得更充分合理)，跑完自动唤主 session 由主 agent 亲验产物再回报；通信经 h5i(基于 git ref 的消息总线)+ git worktree。显式触发：派给另一个 agent、并行做 X、dispatch、后台让 codex/claude/qoder 去做、让另一个 agent 写 X、agent 通信派活、并行派一个 worker。**主动识别(不必等用户明说)**：当 agent 发现手头活可拆成 ≥2 个互不相干、可隔离的子任务——跨端补齐 / 补多端单测 / 修 N 个独立用例 / 面临"先做 A 还是 B"的独立任务分叉 / 长耗时隔离子活——应主动提示用户"这块可并行派给 worker"(只提示不自动派)。
 ---
 
 # h5i-dispatch · 后台并行 agent 任务派发（h5i + worktree）
 
 把一个 **scope 清晰、可隔离**的子任务交给另一个独立 agent **后台并行**干，主 session 同时干别的；通信走 **h5i**（[git-ref 消息总线](https://github.com/h5i-dev/h5i)），工作目录走 **git worktree**（隔离、与主树共享 `refs/h5i`，秒级互通、免 remote），worker 跑完由主 session 唤醒后验证 + 通知用户。
+
+**token 充分合理利用**：多 agent 各自独立配额并行做活；worker 的探索/试错中间过程留在其自身上下文、不回灌主 session，主 session 的 context 省着花在决策与验证上——串行变并行，墙钟与 token 双省。
 
 ## 适用场景
 
