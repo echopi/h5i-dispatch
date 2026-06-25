@@ -3,20 +3,23 @@
 # over h5i (git-ref message bus) + a git worktree. Worker reports via h5i when done.
 #
 # ⚠ This script BLOCKS until the worker finishes. Run it via your harness's background
-#    mechanism (Claude Code: run_in_background) so the main session isn't held — on exit
-#    the harness wakes the main session. Foreground is fine for manual one-offs (you wait).
+#    mechanism when available; otherwise run it in another terminal/session and poll h5i.
+#    Foreground is fine for manual one-offs (you wait).
 #
-# Usage: dispatch.sh <codex|claude|qoder> <wt-name> <task-file> [dispatcher=claude-main] [worker-id]
+# Usage: dispatch.sh <codex|claude|qoder> <wt-name> <task-file> [dispatcher=main] [worker-id]
 #   wt-name    must match ^[A-Za-z0-9._-]+$ (used in worktree path / branch / tmp names)
-#   worker-id  default "<kind>-<wt-name>" (UNIQUE per dispatch → no identity collision)
+#   worker-id  default "<kind>-<wt-name>-<timestamp>-<random>" (UNIQUE per dispatch → no identity collision)
 #
 # Env (optional, no machine-specific hardcoding):
 #   H5I_BIN / CODEX_BIN / CLAUDE_BIN / QODER_BIN
 #                                      binary paths (default: resolve on PATH; H5I falls back to ~/.local/bin/h5i)
+#   DISPATCH_WORKTREE_ROOT             worktree parent dir (default: <repo>/.worktrees/h5i)
 #   DISPATCH_PROXY                     http proxy URL; if set, exported as HTTP(S)_PROXY/ALL_PROXY (upper+lower) for the worker.
 #                                      Set it when your agent CLI normally gets its proxy from a shell wrapper — this script
 #                                      calls the binary directly and bypasses such wrappers (shell functions don't exist in bash).
-#   WORKER_ALLOWED_TOOLS               comma-separated tool list passed to claude/qoder (default: Read,Grep,Glob,Edit,Bash).
+#   MAX_HANDOFF_BYTES                  max task-file size sent through h5i CLI args (default: 60000).
+#                                      h5i handoff currently takes BODY as argv, not stdin/file.
+#   WORKER_ALLOWED_TOOLS               comma-separated tool list passed to claude/qoder (default: Read,Grep,Glob,Edit,Write,Bash).
 #                                      claude uses --allowedTools, qoder uses --allowed-tools.
 #                                      codex exec has no standard tool-restrict flag; this var is ignored for codex.
 #   WORKER_TIMEOUT                     seconds (default 1800). Requires timeout/gtimeout.
@@ -26,10 +29,11 @@ set -euo pipefail
 KIND="${1:?worker kind: codex|claude|qoder}"
 WT_NAME="${2:?worktree name (^[A-Za-z0-9._-]+$)}"
 TASK_FILE="${3:?task file (handoff body)}"
-DISPATCHER="${4:-claude-main}"
-WORKER_ID="${5:-${KIND}-${WT_NAME}}"
+DISPATCHER="${4:-main}"
+WORKER_ID="${5:-${KIND}-${WT_NAME}-$(date +%Y%m%d%H%M%S)-$RANDOM}"
 WORKER_TIMEOUT="${WORKER_TIMEOUT:-1800}"
-WORKER_ALLOWED_TOOLS="${WORKER_ALLOWED_TOOLS:-Read,Grep,Glob,Edit,Bash}"
+WORKER_ALLOWED_TOOLS="${WORKER_ALLOWED_TOOLS:-Read,Grep,Glob,Edit,Write,Bash}"
+MAX_HANDOFF_BYTES="${MAX_HANDOFF_BYTES:-60000}"
 
 # --- validate inputs (WT_NAME flows into path / branch / tmp) ---
 [[ "$WT_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "FATAL: wt-name must match ^[A-Za-z0-9._-]+\$ : '$WT_NAME'"; exit 2; }
@@ -48,14 +52,32 @@ esac
 [ -n "$WORKER_BIN" ] && [ -x "$WORKER_BIN" ] || { echo "FATAL: $KIND binary not found (set $KENV, or install $KIND)"; exit 1; }
 
 ROOT="$(git rev-parse --show-toplevel)"
-WT="$ROOT/.claude/worktrees/$WT_NAME"
+if [ -n "${DISPATCH_WORKTREE_ROOT:-}" ]; then
+  case "$DISPATCH_WORKTREE_ROOT" in
+    /*) WT_ROOT="$DISPATCH_WORKTREE_ROOT" ;;
+    *)  WT_ROOT="$ROOT/$DISPATCH_WORKTREE_ROOT" ;;
+  esac
+else
+  WT_ROOT="$ROOT/.worktrees/h5i"
+fi
+WT="$WT_ROOT/$WT_NAME"
 BRANCH="dispatch/$WT_NAME"
 # anti-collision: timestamp + random suffix prevents races between concurrent dispatches.
 # strip trailing slash from TMPDIR (macOS sets it to .../T/) so we don't get a double slash.
 TMP_DIR="${TMPDIR:-/tmp}"; TMP_DIR="${TMP_DIR%/}"
 LAST="$TMP_DIR/dispatch-$WT_NAME-$(date +%s)-$RANDOM-last.txt"
+RUN_LOG="$LAST"
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || { echo "FATAL: invalid branch name: $BRANCH"; exit 2; }
 TASK="$(cat "$TASK_FILE")"
+TASK_BYTES="$(wc -c < "$TASK_FILE" | tr -d '[:space:]')"
+case "$MAX_HANDOFF_BYTES" in
+  ''|*[!0-9]*) echo "FATAL: MAX_HANDOFF_BYTES must be a positive integer, got '$MAX_HANDOFF_BYTES'"; exit 2 ;;
+esac
+if [ "$TASK_BYTES" -gt "$MAX_HANDOFF_BYTES" ]; then
+  echo "FATAL: task file is ${TASK_BYTES} bytes, above MAX_HANDOFF_BYTES=${MAX_HANDOFF_BYTES}."
+  echo "FATAL: h5i handoff accepts BODY via argv, so large tasks risk ARG_MAX and ps exposure. Put bulky context in tracked/tmp files and hand off a concise pointer."
+  exit 2
+fi
 
 # residue pre-check: fail-loud (don't auto-nuke a worktree we didn't create — may hold prior output)
 if git worktree list --porcelain | grep -Fqx "worktree $WT"; then
@@ -67,9 +89,11 @@ fi
 
 # isolation pre-check: warn if task paths overlap with dirty files in the main worktree (heuristic, not fatal)
 # extract path-like tokens from task file, keep only tracked files/directories to avoid URL/noise false positives
-_task_paths="$(grep -oE '([a-zA-Z0-9_-]+/)+[a-zA-Z0-9_.-]+' "$TASK_FILE" | while IFS= read -r _candidate; do
+_task_paths="$(grep -oE '(\./)?[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*' "$TASK_FILE" | while IFS= read -r _candidate; do
+  _candidate="${_candidate#./}"
+  case "$_candidate" in ''|.|..) continue ;; esac
   # accept if it is a tracked file, or a directory that contains tracked files
-  git -C "$ROOT" ls-files --error-unmatch "$_candidate" >/dev/null 2>&1 || [ -n "$(git -C "$ROOT" ls-files "$_candidate" | head -1)" ] || continue
+  git -C "$ROOT" ls-files --error-unmatch "$_candidate" >/dev/null 2>&1 || [ -n "$(git -C "$ROOT" ls-files "$_candidate" | sed -n '1p')" ] || continue
   echo "$_candidate"
 done | sort -u || true)"
 if [ -n "$_task_paths" ]; then
@@ -88,6 +112,7 @@ fi
 # trap: always remove the prompt; remove OUR worktree+branch only during setup (before worker starts).
 PROMPT="$(mktemp)"
 CLEANUP_WT=0
+# shellcheck disable=SC2329 # invoked by EXIT trap
 cleanup() {
   rm -f "$PROMPT"
   if [ "$CLEANUP_WT" = 1 ]; then
@@ -102,6 +127,7 @@ trap cleanup EXIT
 
 # 1. worktree FIRST (failure here → no orphan handoff)
 echo "== 1. worktree: $WT =="
+mkdir -p "$WT_ROOT"
 git worktree add -b "$BRANCH" "$WT" HEAD
 CLEANUP_WT=1   # from now until worker launch, a failure rolls back the worktree we just made
 
@@ -135,7 +161,12 @@ TO="$(command -v timeout || command -v gtimeout || true)"
 if [ -z "$TO" ] && [ "${ALLOW_NO_TIMEOUT:-0}" != 1 ]; then
   echo "FATAL: no timeout/gtimeout (brew install coreutils). Set ALLOW_NO_TIMEOUT=1 to run unbounded (NOT recommended)."; exit 1
 fi
-[ -n "$TO" ] && TOPFX=("$TO" "$WORKER_TIMEOUT") || { TOPFX=(); echo "WARN: ALLOW_NO_TIMEOUT — worker is unbounded"; }
+if [ -n "$TO" ]; then
+  TOPFX=("$TO" "$WORKER_TIMEOUT")
+else
+  TOPFX=()
+  echo "WARN: ALLOW_NO_TIMEOUT — worker is unbounded"
+fi
 
 # 4. run worker isolated in $WT. Keep the worktree even if the worker fails (for inspection).
 CLEANUP_WT=0
@@ -144,8 +175,9 @@ set +e
 case "$KIND" in
   codex)
     # codex exec has no standard --allowed-tools flag; WORKER_ALLOWED_TOOLS is not passed
+    RUN_LOG="$TMP_DIR/dispatch-$WT_NAME-$(date +%s)-$RANDOM-run.log"
     "${TOPFX[@]}" "$WORKER_BIN" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-      -C "$WT" -o "$LAST" - < "$PROMPT"; RC=$?
+      -C "$WT" -o "$LAST" - < "$PROMPT" > "$RUN_LOG" 2>&1; RC=$?
     ;;
   claude)
     ( cd "$WT" && "${TOPFX[@]}" "$WORKER_BIN" -p "$(cat "$PROMPT")" \
@@ -160,7 +192,7 @@ esac
 set -e
 
 [ "$RC" = 124 ] && echo "WARN: worker timed out (${WORKER_TIMEOUT}s) and was killed"
-echo "== worker exit=$RC. last message -> $LAST =="
+echo "== worker exit=$RC. last message -> $LAST ; run log -> $RUN_LOG =="
 echo "verify:   git -C '$WT' diff --stat   &&   '$H5I' msg history --plain | tail"
 echo "cleanup:  git worktree remove --force '$WT' && git branch -D '$BRANCH'"
 exit "$RC"

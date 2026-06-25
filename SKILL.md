@@ -1,12 +1,12 @@
 ---
 name: h5i-dispatch
-version: 0.3.2
-description: 把 scope 清晰、可隔离的子任务后台派给另一个独立 agent(codex/claude/qoder/ 任意 Claude-Code-harness)并行执行——主 session 不阻塞、多 agent 独立配额并行、worker 探索/试错的中间过程不回灌主上下文(token 用得更充分合理)，跑完自动唤主 session 由主 agent 亲验产物再回报；通信经 h5i(基于 git ref 的消息总线)+ git worktree。显式触发：派给另一个 agent、并行做 X、dispatch、后台让 codex/claude/qoder 去做、让另一个 agent 写 X、agent 通信派活、并行派一个 worker。**主动识别(不必等用户明说)**：当 agent 发现手头活可拆成 ≥2 个互不相干、可隔离的子任务——跨端补齐 / 补多端单测 / 修 N 个独立用例 / 面临"先做 A 还是 B"的独立任务分叉 / 长耗时隔离子活——应主动提示用户"这块可并行派给 worker"(只提示不自动派)。
+version: 0.3.3
+description: 把 scope 清晰、可隔离的子任务后台派给另一个独立 agent(codex/claude/qoder/其它 CLI harness)并行执行——主 session 不阻塞，多 agent 独立配额并行，worker 探索/试错中间过程不回灌主上下文；通信经 h5i(基于 git ref 的消息总线)+ git worktree。显式触发：派给另一个 agent、并行做 X、dispatch、后台让 codex/claude/qoder 去做、让另一个 agent 写 X、agent 通信派活、并行派一个 worker。主动识别：当手头活可拆成 ≥2 个互不相干、可隔离的子任务时，提示用户是否派 worker（只提示不自动派）。
 ---
 
 # h5i-dispatch · 后台并行 agent 任务派发（h5i + worktree）
 
-把一个 **scope 清晰、可隔离**的子任务交给另一个独立 agent **后台并行**干，主 session 同时干别的；通信走 **h5i**（[git-ref 消息总线](https://github.com/h5i-dev/h5i)），工作目录走 **git worktree**（隔离、与主树共享 `refs/h5i`，秒级互通、免 remote），worker 跑完由主 session 唤醒后验证 + 通知用户。
+把一个 **scope 清晰、可隔离**的子任务交给另一个独立 agent **后台并行**干，主 session 同时干别的；通信走 **h5i**（[git-ref 消息总线](https://github.com/h5i-dev/h5i)），工作目录走 **git worktree**（隔离、与主树共享 `refs/h5i`，秒级互通、免 remote）。worker 跑完后，主 session 必须独立验证产物再通知用户；若当前 harness 支持后台任务回灌，可被自动唤醒，否则用 h5i history/wait 轮询。
 
 **token 充分合理利用**：多 agent 各自独立配额并行做活；worker 的探索/试错中间过程留在其自身上下文、不回灌主 session，主 session 的 context 省着花在决策与验证上——串行变并行，墙钟与 token 双省。
 
@@ -39,8 +39,8 @@ description: 把 scope 清晰、可隔离的子任务后台派给另一个独立
 
 ```
 任务可并行？
-├─ 同 Claude Code session 内可完成（无需独立配额/独立 harness）？
-│   └─ → 优先走内置 Claude Code Workflow（Agent tool / run_in_background subagent）
+├─ 同当前 harness/session 内可完成（无需独立配额/独立 CLI）？
+│   └─ → 优先走当前 harness 的内置 subagent / background job / parallel tool
 ├─ 跨 session / 跨 harness / 长耗时 / 需独立配额 / 需隔离工作目录？
 │   └─ → 走 h5i-dispatch
 │       ├─ 改动路径不相交？→ 可以派（并行安全）
@@ -51,8 +51,8 @@ description: 把 scope 清晰、可隔离的子任务后台派给另一个独立
 
 | 场景 | 推荐 |
 |---|---|
-| 同 session 内的子查询、分析、局部改动 | **内置 Workflow**（Agent/subagent） |
-| 跨 session、独立 harness（codex/qoder/Kimi） | **h5i-dispatch** |
+| 同 session 内的子查询、分析、局部改动 | **当前 harness 内置 Workflow**（subagent/background job/parallel tool） |
+| 跨 session、独立 CLI/harness（codex/claude/qoder/Kimi） | **h5i-dispatch** |
 | 长耗时隔离任务（写测试/分析/起草 doc） | **h5i-dispatch** |
 | 多家独立评审（无标准答案） | **cross-review** |
 
@@ -72,8 +72,8 @@ description: 把 scope 清晰、可隔离的子任务后台派给另一个独立
 
 | 项 | 要求 |
 |---|---|
-| **h5i** | 装好（`https://github.com/h5i-dev/h5i`），在 PATH 或设 `H5I_BIN`。**绝不跑 `h5i init`** —— 它会 append `@.claude/h5i.md` 到 CLAUDE.md、改 AGENTS.md。只用 `h5i msg`，零 tracked 污染，refs 不进 `git push` |
-| **worker CLI** | codex（独立配额）/ claude（`-p` headless）/ **qoder（`qodercli -p`）** / 任意 Claude-Code-harness 跑别的后端（如 Kimi）。在 PATH 或设 `CODEX_BIN`/`CLAUDE_BIN`/`QODER_BIN` |
+| **h5i** | 装好（`https://github.com/h5i-dev/h5i`），在 PATH 或设 `H5I_BIN`。**绝不跑 `h5i init`** —— 它可能改写 harness 指令文件（如 CLAUDE.md/AGENTS.md）。只用 `h5i msg`，零 tracked 污染，refs 不进 `git push` |
+| **worker CLI** | codex（独立配额）/ claude（`-p` headless）/ **qoder（`qodercli -p`）** / 其它可命令行执行的 agent harness。在 PATH 或设 `CODEX_BIN`/`CLAUDE_BIN`/`QODER_BIN` |
 | **身份** | `H5I_AGENT=<name>` 每条命令带（覆盖 `.git/.h5i/msg/identity`；worktree 共享该文件，故必须 env 覆盖）|
 | **代理** | 可选。脚本直调二进制、**绕过 shell wrapper**（shell function 在非交互 bash 不存在）——若你平时靠 wrapper 给 codex/claude 设代理，须设 `DISPATCH_PROXY=<url>` 补上 |
 | **timeout** | `timeout`/`gtimeout`（macOS：`brew install coreutils`）；**缺失即 fatal**（除非 `ALLOW_NO_TIMEOUT=1`），防失控后台 agent 永跑 |
@@ -84,23 +84,25 @@ description: 把 scope 清晰、可隔离的子任务后台派给另一个独立
 |---|---|---|
 | `H5I_BIN` | PATH 上的 `h5i`，再退 `~/.local/bin/h5i` | h5i 路径 |
 | `CODEX_BIN` / `CLAUDE_BIN` / `QODER_BIN` | `command -v` 解析（qoder 默认 `qodercli`） | worker 二进制路径 |
+| `DISPATCH_WORKTREE_ROOT` | `<repo>/.worktrees/h5i` | 隔离 worktree 父目录；默认使用仓内已忽略目录，避免 `.claude` 绑定 |
 | `DISPATCH_PROXY` | 未设（继承环境） | 设则导出为 worker 的 `HTTP(S)_PROXY`/`ALL_PROXY`（大小写都设）|
+| `MAX_HANDOFF_BYTES` | `60000` | h5i handoff 当前通过 argv 传 BODY；超过阈值直接 fatal，避免撞 `ARG_MAX` 或把大段敏感任务暴露在 `ps` |
 | `WORKER_TIMEOUT` | `1800`（秒） | worker 超时 watchdog |
 | `ALLOW_NO_TIMEOUT` | `0` | 没 `timeout/gtimeout` 时默认 **fatal**；置 `1` 才允许不限时（不推荐）|
-| `WORKER_ALLOWED_TOOLS` | `Read,Grep,Glob,Edit,Bash` | worker 允许的工具列表；claude 用 `--allowedTools`，qoder 用 `--allowed-tools`；向后兼容，改此变量即可扩缩权限 |
-| 位置参数 `worker-id` | `<kind>-<wt-name>` | 唯一身份，防并发派发回报串线 |
+| `WORKER_ALLOWED_TOOLS` | `Read,Grep,Glob,Edit,Write,Bash` | worker 允许的工具列表；claude 用 `--allowedTools`，qoder 用 `--allowed-tools`，codex 当前不吃该参数 |
+| 位置参数 `worker-id` | `<kind>-<wt-name>-<timestamp>-<random>` | 唯一身份，防并发派发回报串线；手动指定时也必须保证唯一 |
 
 ## 流程
 
-**一把梭**：`scripts/dispatch.sh <codex|claude|qoder> <wt-name> <task-file> [dispatcher] [worker-id]`（封装下面 1–4；`wt-name` 限 `^[A-Za-z0-9._-]+$`，`worker-id` 默认 `<kind>-<wt-name>` **唯一**，避免并发派发身份串线）。
+**一把梭**：`scripts/dispatch.sh <codex|claude|qoder> <wt-name> <task-file> [dispatcher] [worker-id]`（封装下面 1–4；`wt-name` 限 `^[A-Za-z0-9._-]+$`，`worker-id` 默认 `<kind>-<wt-name>-<timestamp>-<random>` **唯一**，避免并发派发身份串线）。
 
-> ⚠ **脚本会阻塞到 worker 结束** —— 用 harness 的后台机制跑（Claude Code：`run_in_background`），退出时 harness 自动唤主 session；**前台直接跑会一直占住**（手动一次性 OK，你就等着它跑完）。
+> ⚠ **脚本会阻塞到 worker 结束** —— 有后台机制的 harness 用后台任务跑；没有后台回灌能力时，在另一终端/session 跑或前台等待，再用 `h5i msg history --plain` 查 DONE。
 
 手动等价：
 
 ### 1. 建隔离 worktree（**先建** —— 失败则不留孤儿 handoff）
 ```
-git worktree add -b dispatch/<wt> .claude/worktrees/<wt> HEAD   # 残留先 worktree remove --force / branch -D
+git worktree add -b dispatch/<wt> .worktrees/h5i/<wt> HEAD   # 可用 DISPATCH_WORKTREE_ROOT 覆盖；残留先 worktree remove --force / branch -D
 ```
 
 ### 2. 发 handoff（worktree 就绪后；主 session 写提示词，任务全文 + **硬 scope 约束**进 h5i）
@@ -108,7 +110,7 @@ git worktree add -b dispatch/<wt> .claude/worktrees/<wt> HEAD   # 残留先 work
 H5I_AGENT=<dispatcher> "$H5I_BIN" msg handoff <worker> "<任务全文，写死『只动 <path>，勿碰其它』>"
 ```
 
-### 3. 后台起 worker（`run_in_background`）+ **timeout 兜底**
+### 3. 后台起 worker + **timeout 兜底**
 worker prompt **必含**：
 - 用 `"$H5I_BIN" msg history --plain` 读任务（**别用 `inbox`，会消费该身份游标**）
 - 长任务中每完成一个阶段发 PROGRESS 心跳（**必须经 h5i 发**，dispatcher 只看总线不看 worker stdout，只 print 到 stdout 不可见）：`H5I_AGENT=<worker> "$H5I_BIN" msg send <dispatcher> "PROGRESS: <phase> <pct>% <one-line note>"`
@@ -120,14 +122,14 @@ worker prompt **必含**：
 - ⚠ JSON 用**单引号**包裹（防 shell 解释 `"`）；若 `summary`/`verification` 文本含单引号，先转义或去掉，否则 JSON 截断——保持值里无 `'`
 - "只动 <path>、自主、别问问题"
 
-启动（`$WBIN`=worker 二进制，`$WT`=worktree 绝对路径，`$WORKER_ALLOWED_TOOLS` 默认 `Read,Grep,Glob,Edit,Bash`）：
+启动（`$WBIN`=worker 二进制，`$WT`=worktree 绝对路径，`$WORKER_ALLOWED_TOOLS` 默认 `Read,Grep,Glob,Edit,Write,Bash`）：
 - **codex**：`[DISPATCH_PROXY 时 export HTTP(S)_PROXY+ALL_PROXY 大小写] H5I_AGENT=<worker> gtimeout 1800 "$WBIN" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C "$WT" -o <last.txt> - < <prompt>`（codex exec 无标准 tool-restrict 参数，保持原样）
 - **claude**：`cd "$WT" && gtimeout 1800 "$WBIN" -p "<prompt>" --allowedTools "$WORKER_ALLOWED_TOOLS"`（claude 无 `-C`，**必须 `cd "$WT"`**，否则在主树写文件）
 - **qoder**：`cd "$WT" && gtimeout 1800 "$WBIN" -p "<prompt>" -w "$WT" --allowed-tools "$WORKER_ALLOWED_TOOLS" --dangerously-skip-permissions`
 - **timeout 缺失即 fatal**（脚本里）：除非 `ALLOW_NO_TIMEOUT=1`，否则没 `timeout/gtimeout` 直接报错退出（防失控后台 agent 永跑）
 
-### 4. worker 退出 → 主 session 被唤醒 → 验证 → 通知
-- **唤醒机制**：worker 经 `run_in_background` 起，退出时 **harness 自动回灌完成通知**唤主 session（无需轮询）。⚠ 仅当主 session 是支持后台任务回灌的 harness（如 Claude Code）才自动；否则主 session 自己 `"$H5I_BIN" msg wait` 阻塞或轮询。
+### 4. worker 退出 → 主 session 验证 → 通知
+- **唤醒机制**：如果当前 harness 支持后台任务完成回灌，worker 退出会自动提醒主 session；否则主 session 自己 `"$H5I_BIN" msg wait` 阻塞或轮询。
 - 读 `"$H5I_BIN" msg history` 看 worker 的 done + last-message 文件
 - **独立验证 worker 产物**（**别只信回报**，AI 产出落码前先验）：
   - `git -C <wt> diff --stat` 对照任务白名单路径 —— **越界文件即红旗**（scope 是建议非强制，这步是 enforce）
@@ -137,7 +139,7 @@ worker prompt **必含**：
 ### 5. 集成（主 session 决定，不越权自动合）
 - 复核 OK → 落主分支，**commit scope 到 worker 改的文件**（`git commit --only <path>`，防误带主树其它未提交改动）
 - 同主题未推 → 提醒 squash 进原 commit（别擅自 rebase 共享活分支）
-- 清理：`git worktree remove --force .claude/worktrees/<wt> && git branch -D dispatch/<wt>`
+- 清理：`git worktree remove --force .worktrees/h5i/<wt> && git branch -D dispatch/<wt>`（若设置了 `DISPATCH_WORKTREE_ROOT`，清理对应路径）
 
 ## worker 选型
 
@@ -146,7 +148,7 @@ worker prompt **必含**：
 | **codex** | 需 `--dangerously-bypass-approvals-and-sandbox`（`workspace-write` sandbox 挡不住写共享 `.git` 的 refs/h5i）| 独立配额 |
 | **claude** | `-p` + `--allowedTools` | 最懂本仓 |
 | **qoder** | `-p` + `-w` + `--allowed-tools` + `--dangerously-skip-permissions` | 本地独立审查/交叉验证，成本低 |
-| **Claude-Code on alt backend**（如 Kimi）| 同 claude（完整 CC harness）| 换后端 = 换配额，仍是 CC harness |
+| **其它 CLI harness**（如 Kimi 包装器）| 按该 CLI 的 headless 参数适配脚本 | 换后端/配额时使用 |
 
 ## 坑（实测）
 - `h5i msg inbox` 推进该身份游标（消费）→ 派任务时**别**替 worker 跑 inbox；worker 用 `history` 读
@@ -159,6 +161,6 @@ worker prompt **必含**：
 ## ⚠ 安全前提（单用户本机专用）
 - **h5i v1 消息不签名、`from` 可伪造** → 同机任意进程能伪造回报骗主 session。**∴ worker 的 DONE 回报只能当"完成提示"，绝不能作为自动合入的依据** —— 合入前必须主 session 亲自 `git diff` 复核
 - **worker 全部走权限绕过** = 给 worker 整机读写+执行权（只为写共享 `.git` 的 refs/h5i，影响面远超此需）：codex `--dangerously-bypass-approvals-and-sandbox`、qoder `--dangerously-skip-permissions`、claude `--allowedTools` 放行 Bash
-- last-message / 任务文件可能落 tmp 明文
+- h5i handoff 当前通过命令行参数传任务 BODY；脚本会限制大任务体，但短任务仍可能被同机 `ps` 看到。last-message / run-log / 任务文件也可能落 tmp 明文
 
 → 仅在**你独占的可信机器**用，**禁多用户机 / 共享仓 / 不可信网络**。唯一防线 = 第4步 `git diff --stat` 越界检查 + 落码前人工复核（绝不凭 DONE 自动合）。
