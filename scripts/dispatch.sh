@@ -39,6 +39,10 @@ MAX_HANDOFF_BYTES="${MAX_HANDOFF_BYTES:-60000}"
 [[ "$WT_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "FATAL: wt-name must match ^[A-Za-z0-9._-]+\$ : '$WT_NAME'"; exit 2; }
 case "$WT_NAME" in .*|*..*) echo "FATAL: wt-name must not start with '.' or contain '..': '$WT_NAME'"; exit 2 ;; esac
 case "$KIND" in codex|claude|qoder) ;; *) echo "FATAL: worker kind must be codex|claude|qoder, got '$KIND'"; exit 2 ;; esac
+# DISPATCHER/WORKER_ID flow into h5i commands + the worker prompt → validate the same
+# charset as WT_NAME to close the prompt/shell-injection surface (codex review G2).
+[[ "$DISPATCHER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "FATAL: dispatcher must match ^[A-Za-z0-9._-]+\$ : '$DISPATCHER'"; exit 2; }
+[[ "$WORKER_ID" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "FATAL: worker-id must match ^[A-Za-z0-9._-]+\$ : '$WORKER_ID'"; exit 2; }
 [ -f "$TASK_FILE" ] || { echo "FATAL: task file not found: $TASK_FILE"; exit 1; }
 
 # --- resolve binaries (env override > PATH > fallback) ---
@@ -192,6 +196,17 @@ esac
 set -e
 
 [ "$RC" = 124 ] && echo "WARN: worker timed out (${WORKER_TIMEOUT}s) and was killed"
+
+# G1: verify the worker actually sent a DONE on the bus. A silent exit (crash/kill, or
+# exit 0 without reporting) leaves no terminal state → a caller could mistake it for
+# success. Promote to exit 3 (protocol violation). Do NOT synthesize a fake DONE on the
+# bus (it could be mistaken for the worker's real report).
+_HIST="$(H5I_AGENT="$DISPATCHER" "$H5I" msg history --plain 2>/dev/null || true)"
+if ! printf '%s\n' "$_HIST" | grep -F "${WORKER_ID} -> ${DISPATCHER}" | grep -qF "DONE:"; then
+  echo "FATAL: worker '$WORKER_ID' exited (RC=$RC) without sending DONE — terminal state missing, do NOT auto-merge"
+  [ "$RC" = 0 ] && RC=3
+fi
+
 echo "== worker exit=$RC. last message -> $LAST ; run log -> $RUN_LOG =="
 echo "verify:   git -C '$WT' diff --stat   &&   '$H5I' msg history --plain | tail"
 echo "cleanup:  git worktree remove --force '$WT' && git branch -D '$BRANCH'"
