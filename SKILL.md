@@ -98,6 +98,21 @@ description: 把 scope 清晰、可隔离的子任务后台派给另一个独立
 
 > ⚠ **脚本会阻塞到 worker 结束** —— 有后台机制的 harness 用后台任务跑；没有后台回灌能力时，在另一终端/session 跑或前台等待，再用 `h5i msg history --plain` 查 DONE。
 
+**Claude Code 范式（实测 ✅ 2026-06-27）**：用 `Bash(run_in_background: true)` 跑 dispatch.sh——主 session 不阻塞，worker 退出后 harness 自动唤醒（task-notification），再读 DONE、验越界、清理：
+
+```
+# 1) 后台派发（主 session 立即继续，不阻塞）
+Bash(run_in_background: true):
+  bash scripts/dispatch.sh <kind> <wt-name> <task-file> <dispatcher> <worker-id>
+# 2) worker 完成 → harness 自动唤醒主 session 后：
+H5I_AGENT=<dispatcher> h5i msg history --plain | tail        # 读 worker 的 DONE
+git -C <repo>/.worktrees/h5i/<wt-name> status --porcelain    # 验越界（输出空=干净）
+git -C <repo> worktree remove --force <repo>/.worktrees/h5i/<wt-name> \
+  && git -C <repo> branch -D dispatch/<wt-name>              # 清理
+```
+
+注：task 里引用的上下文文件必须在 tracked HEAD 里（worktree 看不到 untracked / gitignored 文件，实测踩过），否则给绝对路径让 worker 读主仓。
+
 手动等价：
 
 ### 1. 建隔离 worktree（**先建** —— 失败则不留孤儿 handoff）
