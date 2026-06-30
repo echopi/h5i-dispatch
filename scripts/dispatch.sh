@@ -95,7 +95,7 @@ fi
 # extract path-like tokens from task file, keep only tracked files/directories to avoid URL/noise false positives
 _task_paths="$(grep -oE '(\./)?[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*' "$TASK_FILE" | while IFS= read -r _candidate; do
   _candidate="${_candidate#./}"
-  case "$_candidate" in ''|.|..) continue ;; esac
+  case "$_candidate" in ''|.|..|-*) continue ;; esac
   # accept if it is a tracked file, or a directory that contains tracked files
   git -C "$ROOT" ls-files --error-unmatch "$_candidate" >/dev/null 2>&1 || [ -n "$(git -C "$ROOT" ls-files "$_candidate" | sed -n '1p')" ] || continue
   echo "$_candidate"
