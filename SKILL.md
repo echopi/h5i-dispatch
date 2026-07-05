@@ -1,7 +1,6 @@
 ---
 name: h5i-dispatch
-version: 0.4.0
-description: 把可隔离子任务后台派给另一个独立 agent 并行执行，通信经 h5i + git worktree。触发：dispatch、派给另一个 agent、并行做 X。
+description: 从 Codex/Claude Code 主 session 把可隔离子任务后台派给另一个独立 agent 并行执行，通信经 h5i + git worktree。触发：dispatch、派给另一个 agent、并行做 X、后台让 codex/claude/qoder 去做。
 ---
 
 # h5i-dispatch · 后台并行 agent 任务派发（h5i + worktree）
@@ -13,7 +12,7 @@ description: 把可隔离子任务后台派给另一个独立 agent 并行执行
 - agent 通信派活、并行派一个 worker
 - 主动识别：当手头活可拆成 ≥2 个互不相干、可隔离的子任务时，提示用户是否派 worker（只提示不自动派）
 
-把一个 **scope 清晰、可隔离**的子任务交给另一个独立 agent **后台并行**干，主 session 同时干别的；通信走 **h5i**（[git-ref 消息总线](https://github.com/h5i-dev/h5i)），工作目录走 **git worktree**（隔离、与主树共享 `refs/h5i`，秒级互通、免 remote）。worker 跑完后，主 session 必须独立验证产物再通知用户；若当前 harness 支持后台任务回灌，可被自动唤醒，否则用 h5i history/wait 轮询。
+把一个 **scope 清晰、可隔离**的子任务交给另一个独立 agent **后台并行**干，主 session 同时干别的；通信走 **h5i**（[git-ref 消息总线](https://github.com/h5i-dev/h5i)），工作目录走 **git worktree**（隔离、与主树共享 `refs/h5i`，秒级互通、免 remote）。worker 跑完后，主 session 必须独立验证产物再通知用户；Codex 和 Claude Code 都可作为主控 session，只是后台启动和回灌能力不同。
 
 **token 充分合理利用**：多 agent 各自独立配额并行做活；worker 的探索/试错中间过程留在其自身上下文、不回灌主 session，主 session 的 context 省着花在决策与验证上——串行变并行，墙钟与 token 双省。
 
@@ -101,11 +100,30 @@ description: 把可隔离子任务后台派给另一个独立 agent 并行执行
 
 ## 流程
 
-**一把梭**：`scripts/dispatch.sh <codex|claude|qoder> <wt-name> <task-file> [dispatcher] [worker-id]`（封装下面 1–4；`wt-name` 限 `^[A-Za-z0-9._-]+$`，`worker-id` 默认 `<kind>-<wt-name>-<timestamp>-<random>` **唯一**，避免并发派发身份串线）。
+**一把梭**：优先用 skill 自带脚本 `scripts/dispatch.sh <codex|claude|qoder> <wt-name> <task-file> [dispatcher] [worker-id]`（封装下面 1–4；`wt-name` 限 `^[A-Za-z0-9._-]+$`，`worker-id` 默认 `<kind>-<wt-name>-<timestamp>-<random>` **唯一**，避免并发派发身份串线）。如果本 skill 被复制到项目的 `.agents/skills/h5i-dispatch/`，则从项目内调用 `.agents/skills/h5i-dispatch/scripts/dispatch.sh`；不要假设项目根目录一定有 `scripts/dispatch.sh`。
 
-> ⚠ **脚本会阻塞到 worker 结束** —— 有后台机制的 harness 用后台任务跑；没有后台回灌能力时，在另一终端/session 跑或前台等待，再用 `h5i msg history --plain` 查 DONE。
+> ⚠ **脚本会阻塞到 worker 结束** —— 有后台机制的 harness 用后台任务跑；没有后台回灌能力时，用长运行 shell session/另一终端/session 跑或前台等待，再用 `h5i msg history --plain` 查 DONE。
 
-**Claude Code 范式（实测 ✅ 2026-06-27）**：用 `Bash(run_in_background: true)` 跑 dispatch.sh——主 session 不阻塞，worker 退出后 harness 自动唤醒（task-notification），再读 DONE、验越界、清理：
+**Codex 主控范式**：Codex 可直接使用同一个 dispatch 脚本；如果没有 Claude Code 的 `Bash(run_in_background: true)` 自动唤醒语义，就把 dispatch 脚本作为长运行命令启动，保留返回的 session id，主 session 继续做只读工作或定期轮询。
+
+```
+# 1) 准备 task 文件（一次性 receipt 放 /tmp；任务正文必须写死 scope）
+/tmp/h5i-task-<name>.md
+
+# 2) 启动长运行 dispatch；若当前工具返回 session id，后续 poll 这个 session
+scripts/dispatch.sh <kind> <wt-name> /tmp/h5i-task-<name>.md <dispatcher> <worker-id>
+
+# 3) 轮询 worker 回报和脚本输出
+H5I_AGENT=<dispatcher> h5i msg history --plain
+git -C <repo>/.worktrees/h5i/<wt-name> diff --stat
+
+# 4) worker 完成后，主 session 独立验证 diff；只在验证 OK 后集成或通知用户
+git -C <repo>/.worktrees/h5i/<wt-name> status --porcelain
+```
+
+Codex 主控时不要把 stdout 当完成信号；以 `h5i msg history --plain` 中 worker 发给 dispatcher 的结构化 `DONE:` 和 dispatch 脚本 exit code 为准。若当前 Codex 工具不支持保留长运行 session，就在另一终端/session 跑脚本，主 session 轮询 h5i。
+
+**Claude Code 主控范式（实测 ✅ 2026-06-27）**：用 `Bash(run_in_background: true)` 跑同一个 dispatch 脚本，主 session 不阻塞，worker 退出后 harness 自动唤醒（task-notification），再读 DONE、验越界、清理：
 
 ```
 # 1) 后台派发（主 session 立即继续，不阻塞）
