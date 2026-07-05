@@ -1,6 +1,6 @@
 # h5i-dispatch
 
-Agent skill —— 把隔离、可并行的子任务派给另一个 agent（codex / claude / qoder / 其它 CLI harness）后台执行，经 **h5i**（基于 git ref 的消息总线）+ **git worktree** 通信，worker 跑完后由主 session 验证回报；并能**主动识别**可并行的活、提示派发。
+Codex / Claude Code skill —— 把隔离、可并行的子任务派给另一个 agent（codex / claude / qoder / 其它 CLI harness）后台执行，经 **h5i**（基于 git ref 的消息总线）+ **git worktree** 通信，worker 跑完后由主 session 验证回报；并能**主动识别**可并行的活、提示派发。
 
 ## 安装
 把本 skill 放进 agent 的 skills 目录：
