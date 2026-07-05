@@ -100,36 +100,36 @@ description: 从 Codex/Claude Code 主 session 把可隔离子任务后台派给
 
 ## 流程
 
-**一把梭**：优先用 skill 自带脚本 `scripts/dispatch.sh <codex|claude|qoder> <wt-name> <task-file> [dispatcher] [worker-id]`（封装下面 1–4；`wt-name` 限 `^[A-Za-z0-9._-]+$`，`worker-id` 默认 `<kind>-<wt-name>-<timestamp>-<random>` **唯一**，避免并发派发身份串线）。如果本 skill 被复制到项目的 `.agents/skills/h5i-dispatch/`，则从项目内调用 `.agents/skills/h5i-dispatch/scripts/dispatch.sh`；不要假设项目根目录一定有 `scripts/dispatch.sh`。
+**一把梭**：优先用 skill 自带脚本 `scripts/dispatch.sh <codex|claude|qoder> <wt-name> <task-file> [dispatcher] [worker-id]`（封装手动流程 M1-M4；`wt-name` 限 `^[A-Za-z0-9._-]+$`，`worker-id` 默认 `<kind>-<wt-name>-<timestamp>-<random>` **唯一**，避免并发派发身份串线）。如果本 skill 被复制到项目的 `.agents/skills/h5i-dispatch/`，则从项目内调用 `.agents/skills/h5i-dispatch/scripts/dispatch.sh`；不要假设项目根目录一定有 `scripts/dispatch.sh`。
 
 > ⚠ **脚本会阻塞到 worker 结束** —— 有后台机制的 harness 用后台任务跑；没有后台回灌能力时，用长运行 shell session/另一终端/session 跑或前台等待，再用 `h5i msg history --plain` 查 DONE。
 
-**Codex 主控范式**：Codex 可直接使用同一个 dispatch 脚本；如果没有 Claude Code 的 `Bash(run_in_background: true)` 自动唤醒语义，就把 dispatch 脚本作为长运行命令启动，保留返回的 session id，主 session 继续做只读工作或定期轮询。
+**Codex 主控范式**：Codex 可直接使用同一个 dispatch 脚本；但 `dispatch.sh` 本身是同步阻塞脚本，不会产生自己的 session id，也没有 Claude Code 的 `Bash(run_in_background: true)` 自动唤醒语义。要让主 session 继续做只读工作，就在另一个终端/session 跑脚本，或用当前 Codex harness 提供的长运行 shell session 功能承载这个前台命令；主 session 通过 h5i 轮询 worker 回报。
 
 ```
-# 1) 准备 task 文件（一次性 receipt 放 /tmp；任务正文必须写死 scope）
+# C-1) 准备 task 文件（一次性 receipt 放 /tmp；任务正文必须写死 scope）
 /tmp/h5i-task-<name>.md
 
-# 2) 启动长运行 dispatch；若当前工具返回 session id，后续 poll 这个 session
+# C-2) 在另一个终端/session，或 Codex 长运行 shell session 中启动 dispatch
 scripts/dispatch.sh <kind> <wt-name> /tmp/h5i-task-<name>.md <dispatcher> <worker-id>
 
-# 3) 轮询 worker 回报和脚本输出
+# C-3) 主 session 轮询 worker 回报和 worktree diff
 H5I_AGENT=<dispatcher> h5i msg history --plain
 git -C <repo>/.worktrees/h5i/<wt-name> diff --stat
 
-# 4) worker 完成后，主 session 独立验证 diff；只在验证 OK 后集成或通知用户
+# C-4) worker 完成后，主 session 独立验证 diff；只在验证 OK 后集成或通知用户
 git -C <repo>/.worktrees/h5i/<wt-name> status --porcelain
 ```
 
-Codex 主控时不要把 stdout 当完成信号；以 `h5i msg history --plain` 中 worker 发给 dispatcher 的结构化 `DONE:` 和 dispatch 脚本 exit code 为准。若当前 Codex 工具不支持保留长运行 session，就在另一终端/session 跑脚本，主 session 轮询 h5i。
+Codex 主控时不要把 stdout 当完成信号；以 `h5i msg history --plain` 中 worker 发给 dispatcher 的结构化 `DONE:` 和 dispatch 脚本 exit code 为准。若当前 Codex 工具不支持长运行 shell session，就在另一终端/session 跑脚本，主 session 轮询 h5i。
 
 **Claude Code 主控范式（实测 ✅ 2026-06-27）**：用 `Bash(run_in_background: true)` 跑同一个 dispatch 脚本，主 session 不阻塞，worker 退出后 harness 自动唤醒（task-notification），再读 DONE、验越界、清理：
 
 ```
-# 1) 后台派发（主 session 立即继续，不阻塞）
+# CC-1) 后台派发（主 session 立即继续，不阻塞）
 Bash(run_in_background: true):
   bash scripts/dispatch.sh <kind> <wt-name> <task-file> <dispatcher> <worker-id>
-# 2) worker 完成 → harness 自动唤醒主 session 后：
+# CC-2) worker 完成 → harness 自动唤醒主 session 后：
 H5I_AGENT=<dispatcher> h5i msg history --plain | tail        # 读 worker 的 DONE
 git -C <repo>/.worktrees/h5i/<wt-name> status --porcelain    # 验越界（输出空=干净）
 git -C <repo> worktree remove --force <repo>/.worktrees/h5i/<wt-name> \
@@ -140,17 +140,17 @@ git -C <repo> worktree remove --force <repo>/.worktrees/h5i/<wt-name> \
 
 手动等价：
 
-### 1. 建隔离 worktree（**先建** —— 失败则不留孤儿 handoff）
+### M1. 建隔离 worktree（**先建** —— 失败则不留孤儿 handoff）
 ```
 git worktree add -b dispatch/<wt> .worktrees/h5i/<wt> HEAD   # 可用 DISPATCH_WORKTREE_ROOT 覆盖；残留先 worktree remove --force / branch -D
 ```
 
-### 2. 发 handoff（worktree 就绪后；主 session 写提示词，任务全文 + **硬 scope 约束**进 h5i）
+### M2. 发 handoff（worktree 就绪后；主 session 写提示词，任务全文 + **硬 scope 约束**进 h5i）
 ```
 H5I_AGENT=<dispatcher> "$H5I_BIN" msg handoff <worker> "<任务全文，写死『只动 <path>，勿碰其它』>"
 ```
 
-### 3. 后台起 worker + **timeout 兜底**
+### M3. 后台起 worker + **timeout 兜底**
 worker prompt **必含**：
 - 用 `"$H5I_BIN" msg history --plain` 读任务（**别用 `inbox`，会消费该身份游标**）
 - 长任务中每完成一个阶段发 PROGRESS 心跳（**必须经 h5i 发**，dispatcher 只看总线不看 worker stdout，只 print 到 stdout 不可见）：`H5I_AGENT=<worker> "$H5I_BIN" msg send <dispatcher> "PROGRESS: <phase> <pct>% <one-line note>"`
@@ -168,7 +168,7 @@ worker prompt **必含**：
 - **qoder**：`cd "$WT" && gtimeout 1800 "$WBIN" -p "<prompt>" -w "$WT" --allowed-tools "$WORKER_ALLOWED_TOOLS" --dangerously-skip-permissions`
 - **timeout 缺失即 fatal**（脚本里）：除非 `ALLOW_NO_TIMEOUT=1`，否则没 `timeout/gtimeout` 直接报错退出（防失控后台 agent 永跑）
 
-### 4. worker 退出 → 主 session 验证 → 通知
+### M4. worker 退出 → 主 session 验证 → 通知
 - **唤醒机制**：如果当前 harness 支持后台任务完成回灌，worker 退出会自动提醒主 session；否则主 session 自己 `"$H5I_BIN" msg wait` 阻塞或轮询。
 - 读 `"$H5I_BIN" msg history` 看 worker 的 done + last-message 文件
 - **独立验证 worker 产物**（**别只信回报**，AI 产出落码前先验）：
@@ -176,7 +176,7 @@ worker prompt **必含**：
   - 对照真实 API/源码复核逻辑正确性
 - 主动通知用户
 
-### 5. 集成（主 session 决定，不越权自动合）
+### M5. 集成（主 session 决定，不越权自动合）
 - 复核 OK → 落主分支，**commit scope 到 worker 改的文件**（`git commit --only <path>`，防误带主树其它未提交改动）
 - 同主题未推 → 提醒 squash 进原 commit（别擅自 rebase 共享活分支）
 - 清理：`git worktree remove --force .worktrees/h5i/<wt> && git branch -D dispatch/<wt>`（若设置了 `DISPATCH_WORKTREE_ROOT`，清理对应路径）
