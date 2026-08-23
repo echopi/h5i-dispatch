@@ -68,6 +68,8 @@ BASE_SHA="$(git rev-parse HEAD)"
 # immutably at creation. Reject anything but a plain revision spelling.
 DISPATCH_FROM="${DISPATCH_FROM:-}"
 if [ -n "$DISPATCH_FROM" ]; then
+  case "$DISPATCH_FROM" in -*)
+    echo "FATAL: DISPATCH_FROM must not start with '-' (would be misparsed as a flag): '$DISPATCH_FROM'" >&2; exit 2 ;; esac
   case "$DISPATCH_FROM" in *[!A-Za-z0-9._/~^-]*|"")
     echo "FATAL: DISPATCH_FROM must be a plain git revision (sha or ref like HEAD~1; no spaces/quotes): '$DISPATCH_FROM'" >&2; exit 2 ;; esac
   BASE_SHA="$DISPATCH_FROM"
