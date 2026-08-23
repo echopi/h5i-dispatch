@@ -1,0 +1,4 @@
+# machine-local box profiles (seatbelt grants) — never commit or publish
+.h5i/
+# dispatch export artifacts (patch.diff / report.md / receipt.json)
+h5i-export/

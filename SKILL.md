@@ -1,9 +1,10 @@
 ---
 name: h5i-dispatch
+version: 0.4.1
 description: 从主 session 把可隔离子任务后台派给另一个独立 agent（qoder/pi/codex）并行执行，worker 跑在 h5i box（受限 worktree + 策略 + host 侧 receipt）里，产物经 export 门人工复核后合入。触发：dispatch、派给另一个 agent、并行做 X、后台让 qoder/pi/codex 去做。
 ---
 
-# h5i-dispatch · 后台并行 agent 任务派发（h5i box 模型，v0.4.0）
+# h5i-dispatch · 后台并行 agent 任务派发（h5i box 模型，v0.4.1）
 
 ## 触发词
 
