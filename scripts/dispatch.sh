@@ -20,6 +20,13 @@
 #   MAX_TASK_BYTES       task file size cap (default 60000)
 #   DISPATCH_PROXY       proxy for pi (default http://127.0.0.1:${PROXY_PORT:-7897})
 #   DISPATCH_KEEP_BOX    1 = do not rm the box at the end (debug)
+#   DISPATCH_FROM        base revision for the box (default: HEAD), passed to
+#                        `h5i box --from` and pinned immutably at creation
+#   DISPATCH_EXTRA_ARGS  extra CLI args injected HOST-SIDE into the worker
+#                        command line (e.g. '--model GLM-5.3'). Charset-validated:
+#                        the box policy only allows exec'ing the worker binary
+#                        itself (a wrapper script is denied), so this is the
+#                        supported way to select a model / pass extra flags.
 #
 # The script BLOCKS until the worker finishes. Run it inside your harness's
 # background-task mechanism (e.g. Claude Code run_in_background) to keep the
@@ -56,6 +63,25 @@ git rev-parse --git-dir >/dev/null 2>&1 || { echo "FATAL: not inside a git repo 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 BASE_SHA="$(git rev-parse HEAD)"
 
+# --- optional knobs: fail closed BEFORE the box exists -----------------------
+# DISPATCH_FROM pins an alternate base (sha / ref); h5i resolves and re-pins it
+# immutably at creation. Reject anything but a plain revision spelling.
+DISPATCH_FROM="${DISPATCH_FROM:-}"
+if [ -n "$DISPATCH_FROM" ]; then
+  case "$DISPATCH_FROM" in *[!A-Za-z0-9._/~^-]*|"")
+    echo "FATAL: DISPATCH_FROM must be a plain git revision (sha or ref like HEAD~1; no spaces/quotes): '$DISPATCH_FROM'" >&2; exit 2 ;; esac
+  BASE_SHA="$DISPATCH_FROM"
+fi
+
+# DISPATCH_EXTRA_ARGS is interpolated into the `sh -c` command line below
+# (host-side, NOT via env.pass — so existing profiles need no migration).
+# Restrict the charset so it can never break out of that interpolation.
+DISPATCH_EXTRA_ARGS="${DISPATCH_EXTRA_ARGS:-}"
+if [ -n "$DISPATCH_EXTRA_ARGS" ]; then
+  case "$DISPATCH_EXTRA_ARGS" in *[!A-Za-z0-9\ .=:,_/-]*)
+    echo "FATAL: DISPATCH_EXTRA_ARGS contains shell metacharacters (allowed: alnum space . = : , _ / -): '$DISPATCH_EXTRA_ARGS'" >&2; exit 2 ;; esac
+fi
+
 # --- profiles: ensure .h5i/env.toml carries the worker profiles -------------
 # Machine-local grants; file stays untracked unless you commit it. Idempotent:
 # appends only missing [profile.*] blocks. Grants verified on macOS arm64
@@ -84,7 +110,7 @@ net.egress = ["api.anthropic.com", "platform.claude.com", "registry.npmjs.org", 
 
 # --- create box --------------------------------------------------------------
 echo ">> creating box '$BOX' (worker=$KIND, base=$BASE_SHA)"
-"$H5I" box --name "$BOX" --profile "agent-$KIND" >&2
+"$H5I" box --name "$BOX" --profile "agent-$KIND" ${DISPATCH_FROM:+--from "$DISPATCH_FROM"} >&2
 
 WORK="$REPO_ROOT/.git/.h5i/env/human/$BOX/work"
 [ -d "$WORK" ] || { echo "FATAL: box work dir missing: $WORK" >&2; exit 1; }
@@ -134,11 +160,11 @@ echo ">> running $KIND worker in box '$BOX' (timeout ${WORKER_TIMEOUT}s)"
 set +e
 "$TIMEOUT_BIN" "$WORKER_TIMEOUT" "$H5I" box run "$BOX" -- sh -c '
   case '"$KIND"' in
-    qoder) HOME=$PWD/qhome exec "${QODER_BIN:-qodercli}" -p "$INSTRUCTION" --dangerously-skip-permissions ;;
+    qoder) HOME=$PWD/qhome exec "${QODER_BIN:-qodercli}" '"$DISPATCH_EXTRA_ARGS"' -p "$INSTRUCTION" --dangerously-skip-permissions ;;
     pi)    HTTP_PROXY="${DISPATCH_PROXY:-http://127.0.0.1:${PROXY_PORT:-7897}}" \
            HTTPS_PROXY="${DISPATCH_PROXY:-http://127.0.0.1:${PROXY_PORT:-7897}}" \
-           HOME=$PWD/phome exec "${PI_BIN:-pi}" -p "$INSTRUCTION" --no-session ;;
-    codex) exec "${CODEX_BIN:-codex}" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$INSTRUCTION" ;;
+           HOME=$PWD/phome exec "${PI_BIN:-pi}" '"$DISPATCH_EXTRA_ARGS"' -p "$INSTRUCTION" --no-session ;;
+    codex) exec "${CODEX_BIN:-codex}" exec '"$DISPATCH_EXTRA_ARGS"' --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$INSTRUCTION" ;;
   esac'
 RC=$?
 set -e

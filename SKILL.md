@@ -75,6 +75,8 @@ description: 从主 session 把可隔离子任务后台派给另一个独立 age
 | `MAX_TASK_BYTES` | `60000` | task 文件大小上限 |
 | `DISPATCH_PROXY` | `http://127.0.0.1:${PROXY_PORT:-7897}` | pi 专用代理（Anthropic API 需代理出海） |
 | `DISPATCH_KEEP_BOX` | `0` | 置 1 结束时不删 box（调试）；export 失败时自动保留供取证 |
+| `DISPATCH_FROM` | `HEAD` | box base revision，透传 `h5i box --from`（创建时不可变 pin，避免派发期间主线漂移） |
+| `DISPATCH_EXTRA_ARGS` | 空 | 注入 worker 命令行的额外参数（如 `--model GLM-5.3`）；host 侧拼接、字符集校验。box 策略只放行 worker 二进制 exec（wrapper 脚本被拒），换模型/加 flag 只能走这个 |
 
 ## 流程
 
@@ -124,6 +126,7 @@ egress 白名单是从 receipt 的 denied 发现项**实测**出来的，不是�
 
 ## 坑（实测）
 
+- **box 策略只放行 worker 二进制本体 exec**：包一层 wrapper 脚本再调 qodercli 会被 seatbelt 拒——给 worker 传额外参数（如换模型）只能走 `DISPATCH_EXTRA_ARGS`（host 侧拼进命令行），别造 wrapper
 - **`env.pass` 是替换不是追加**：profile 一旦写了 `env.pass`，PATH 都掉成裸默认——必须把 `PATH`/`HOME` 显式列进去，否则 worker 二进制 127
 - **seed 里不能有嵌套 git 仓**：export 的 mediated commit fail-closed 拒绝；rsync 一律 `--exclude=.git`
 - **seed 目录会进 patch**：worker 结束后、export 前必须删 seed（脚本已做），否则交付物被几百 M HOME 噪声淹没
