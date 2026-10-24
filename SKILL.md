@@ -1,10 +1,10 @@
 ---
 name: h5i-dispatch
-version: 0.4.1
+version: 0.4.2
 description: 从主 session 把可隔离子任务后台派给另一个独立 agent（qoder/pi/codex）并行执行，worker 跑在 h5i box（受限 worktree + 策略 + host 侧 receipt）里，产物经 export 门人工复核后合入。触发：dispatch、派给另一个 agent、并行做 X、后台让 qoder/pi/codex 去做。
 ---
 
-# h5i-dispatch · 后台并行 agent 任务派发（h5i box 模型，v0.4.1）
+# h5i-dispatch · 后台并行 agent 任务派发（h5i box 模型，v0.4.2）
 
 ## 触发词
 
@@ -78,6 +78,7 @@ worker 的探索中间过程保留在自身上下文，主 session 接收有界�
 | `DISPATCH_KEEP_BOX` | `0` | 置 1 结束时不删 box（调试）；export 失败时自动保留供取证 |
 | `DISPATCH_FROM` | `HEAD` | box base revision，透传 `h5i box --from`（创建时不可变 pin，避免派发期间主线漂移） |
 | `DISPATCH_EXTRA_ARGS` | 空 | 注入 worker 命令行的额外参数（如 `--model GLM-5.3`）；host 侧拼接、字符集校验。box 策略只放行 worker 二进制 exec（wrapper 脚本被拒），换模型/加 flag 只能走这个 |
+| `DISPATCH_PREFLIGHT` | `1` | 派发前在 box 里运行一个最多 90s 的简短请求；非零退出时 exit 3 并尝试清理 box。0 = 关闭 |
 
 ## 流程
 
@@ -115,6 +116,10 @@ h5i box diff <box-name>       # 当前改动
 8. **export 门**：冻结 box → patch.diff + report.md + receipt.json；**receipt 是 host 侧记录（命令/exit/egress 裁决），但 patch 内容仍是 worker 产物，必须人工复核**
 9. **清理**：`trap` 兜底 `box rm --force`（含中断/失败路径；export 失败时保留 box 供取证）
 
+Codex 的内建 `agent-codex` profile 不透传 `INSTRUCTION` / `CODEX_BIN`（实测 h5i 0.3.3）。脚本将指令写入 box 内的 `.dispatch-instruction.md`，通过 `codex exec -` 的 stdin 读取；preflight 写入探针指令，正式执行前换回任务文件指针。可执行文件路径由宿主解析后通过 shell 位置参数传入。两个任务交接文件均在 export 前删除，无需扩大 profile 的环境变量白名单。
+
+离线回归：`python3 -m unittest discover -s scripts/tests -v`，覆盖三种 worker 的 preflight、失败中止、正式任务、自定义 Codex 路径及交接文件清理；不调用模型，不等同于真实 worker 端到端验证。
+
 ## worker 选型
 
 | worker | 端到端验证 | seed 成本 | 备注 |
@@ -133,6 +138,7 @@ egress 白名单是从 receipt 的 denied 发现项**实测**出来的，不是�
 - **seed 目录会进 patch**：worker 结束后、export 前必须删 seed（脚本已做），否则交付物被几百 M HOME 噪声淹没
 - **软链要解引用**：host 的配置软链（如 settings.json → 仓外）在 box 里 EPERM；rsync 用 `-L`
 - **超时 run 无 receipt**：别拿 receipt 存在与否判断"跑没跑过"；脚本以 exit 124 为准
+- **先检查启动，再运行任务**：默认先运行一个最多 90s 的简短模型请求，非零退出时以 exit 3 中止派发。探针失败可能来自启动参数、登录态、策略、网络或后端，须结合输出定位；探针 exit 0 只证明该次进程成功退出，不证明任务完成。设置 `DISPATCH_PREFLIGHT=0` 可跳过。
 - **box 冻结后不可续跑**：export 即 proposed；`h5i box run` 报 Metadata error 是正常生命周期
 - **stale 状态可复用**：超时后 box 显示 `running (stale)`，下次 run 照常；`box rm --force` 照常清理
 
