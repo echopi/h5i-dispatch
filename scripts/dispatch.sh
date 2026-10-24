@@ -27,6 +27,9 @@
 #                        the box policy only allows exec'ing the worker binary
 #                        itself (a wrapper script is denied), so this is the
 #                        supported way to select a model / pass extra flags.
+#   DISPATCH_PREFLIGHT   1 (default) = run a trivial model-channel probe in the
+#                        box first; exit 3 on failure instead of burning the
+#                        task's WORKER_TIMEOUT on stream-header retries.
 #
 # The script BLOCKS until the worker finishes. Run it inside your harness's
 # background-task mechanism (e.g. Claude Code run_in_background) to keep the
@@ -109,6 +112,7 @@ env.pass = ["PATH", "HOME", "INSTRUCTION", "QODER_BIN", "PI_BIN", "CODEX_BIN", "
 net.mode = "host"
 net.egress = ["api.anthropic.com", "platform.claude.com", "registry.npmjs.org", "github.com", "codeload.github.com", "objects.githubusercontent.com"]'
 # codex uses the BUILT-IN agent-codex profile (HOME-state copy + OpenAI egress).
+# It does not pass our INSTRUCTION/CODEX_BIN variables through to the worker.
 
 # --- create box --------------------------------------------------------------
 echo ">> creating box '$BOX' (worker=$KIND, base=$BASE_SHA)"
@@ -118,6 +122,7 @@ WORK="$REPO_ROOT/.git/.h5i/env/human/$BOX/work"
 [ -d "$WORK" ] || { echo "FATAL: box work dir missing: $WORK" >&2; exit 1; }
 
 cleanup() {
+  [ "${BOX_GONE:-0}" = "1" ] && return 0
   if [ "${DISPATCH_KEEP_BOX:-0}" = "1" ] || [ "${EXPORT_OK:-0}" != "1" ]; then
     [ "${EXPORT_OK:-0}" = "1" ] || echo ">> keeping box '$BOX' for forensics (export did not succeed; rm manually: h5i box rm $BOX --force)"
     return 0
@@ -154,20 +159,55 @@ esac
 # --- handoff: task file into the work dir (NOT argv: receipts + ps) ---------
 cp "$TASK_FILE" "$WORK/.dispatch-task.md"
 export INSTRUCTION="You are a background worker inside an isolated h5i box. Read the file .dispatch-task.md in your current directory and execute it exactly. Only touch the paths it allows. When done, stop."
-export QODER_BIN="${QODER_BIN:-}" PI_BIN="${PI_BIN:-}" CODEX_BIN="${CODEX_BIN:-}"
+export QODER_BIN="${QODER_BIN:-}" PI_BIN="${PI_BIN:-}" CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
 export DISPATCH_PROXY="${DISPATCH_PROXY:-}" PROXY_PORT="${PROXY_PORT:-}"
 
+WORKER_SH='case '"$KIND"' in
+  qoder) HOME=$PWD/qhome exec "${QODER_BIN:-qodercli}" '"$DISPATCH_EXTRA_ARGS"' -p "$INSTRUCTION" --dangerously-skip-permissions ;;
+  pi)    HTTP_PROXY="${DISPATCH_PROXY:-http://127.0.0.1:${PROXY_PORT:-7897}}" \
+         HTTPS_PROXY="${DISPATCH_PROXY:-http://127.0.0.1:${PROXY_PORT:-7897}}" \
+         HOME=$PWD/phome exec "${PI_BIN:-pi}" '"$DISPATCH_EXTRA_ARGS"' -p "$INSTRUCTION" --no-session ;;
+  codex) exec "${1:-codex}" exec '"$DISPATCH_EXTRA_ARGS"' --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check - < .dispatch-instruction.md ;;
+esac'
+
+# A bounded startup request can catch failures before spending the task
+# timeout. A nonzero exit can come from the CLI, credentials, policy, network
+# or backend; exit zero alone does not establish task completion.
+DISPATCH_PREFLIGHT="${DISPATCH_PREFLIGHT:-1}"
+if [ "$DISPATCH_PREFLIGHT" = "1" ]; then
+  echo ">> preflight: trivial model-channel probe in box (max 90s)"
+  if [ "$KIND" = "codex" ]; then
+    printf '%s\n' 'Reply with exactly: ok' > "$WORK/.dispatch-instruction.md"
+  fi
+  PF_OUT="$(mktemp)"
+  if ! INSTRUCTION="Reply with exactly: ok" "$TIMEOUT_BIN" 90 \
+       "$H5I" box run "$BOX" -- sh -c "$WORKER_SH" dispatch-worker "$CODEX_BIN" >"$PF_OUT" 2>&1; then
+    echo "FATAL: preflight probe failed; dispatch aborted before running the task. Check worker startup, credentials, policy, network and backend using the output below." >&2
+    tail -5 "$PF_OUT" >&2
+    rm -f "$PF_OUT"
+    if [ "${DISPATCH_KEEP_BOX:-0}" != "1" ]; then
+      if "$H5I" box rm "$BOX" --force; then
+        BOX_GONE=1
+      else
+        echo "note: preflight cleanup failed; keeping box '$BOX' for inspection" >&2
+      fi
+    fi
+    exit 3
+  fi
+  rm -f "$PF_OUT"
+  echo ">> preflight ok"
+fi
+
+# Deliver the pointer on stdin; the built-in Codex profile filters INSTRUCTION.
+# The binary path is a shell positional argument, so CODEX_BIN need not pass
+# through the profile either. Task contents remain in .dispatch-task.md.
+if [ "$KIND" = "codex" ]; then
+  printf '%s\n' "$INSTRUCTION" > "$WORK/.dispatch-instruction.md"
+fi
 WORKER_TIMEOUT="${WORKER_TIMEOUT:-1800}"
 echo ">> running $KIND worker in box '$BOX' (timeout ${WORKER_TIMEOUT}s)"
 set +e
-"$TIMEOUT_BIN" "$WORKER_TIMEOUT" "$H5I" box run "$BOX" -- sh -c '
-  case '"$KIND"' in
-    qoder) HOME=$PWD/qhome exec "${QODER_BIN:-qodercli}" '"$DISPATCH_EXTRA_ARGS"' -p "$INSTRUCTION" --dangerously-skip-permissions ;;
-    pi)    HTTP_PROXY="${DISPATCH_PROXY:-http://127.0.0.1:${PROXY_PORT:-7897}}" \
-           HTTPS_PROXY="${DISPATCH_PROXY:-http://127.0.0.1:${PROXY_PORT:-7897}}" \
-           HOME=$PWD/phome exec "${PI_BIN:-pi}" '"$DISPATCH_EXTRA_ARGS"' -p "$INSTRUCTION" --no-session ;;
-    codex) exec "${CODEX_BIN:-codex}" exec '"$DISPATCH_EXTRA_ARGS"' --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$INSTRUCTION" ;;
-  esac'
+"$TIMEOUT_BIN" "$WORKER_TIMEOUT" "$H5I" box run "$BOX" -- sh -c "$WORKER_SH" dispatch-worker "$CODEX_BIN"
 RC=$?
 set -e
 
@@ -184,6 +224,9 @@ case "$KIND" in
   pi)    rm -rf "$WORK/phome" ;;
 esac
 rm -f "$WORK/.dispatch-task.md"
+if [ "$KIND" = "codex" ]; then
+  rm -f "$WORK/.dispatch-instruction.md"
+fi
 
 # --- output gate -------------------------------------------------------------
 echo ">> exporting (freeze box -> patch.diff + report.md + receipt.json)"
