@@ -15,7 +15,7 @@ description: 从主 session 把可隔离子任务后台派给另一个独立 age
 
 把一个 **scope 清晰、可隔离**的子任务交给另一个独立 agent **后台并行**干，主 session 同时干别的。v0.4.0 起 worker 跑在 **h5i box**（[h5i](https://github.com/h5i-dev/h5i) 0.3.x 的受限开发环境：git worktree + pinned 策略 + host 侧 receipt）里；产物经 **export 门**（patch.diff + report.md + receipt.json）由主 session 人工复核后 `git apply`。旧版依赖的 `h5i msg` 消息总线已被上游在 0.3.x 移除，本版本不再使用。
 
-**token 充分合理利用**：多 agent 各自独立配额并行做活；worker 的探索/试错中间过程留在其自身上下文、不回灌主 session，主 session 的 context 省着花在决策与验证上——串行变并行，墙钟与 token 双省。
+worker 的探索中间过程保留在自身上下文，主 session 接收有界结果；是否减少总耗时、token 或费用要按实际运行核对，独立 session 不保证独立配额或成本下降。
 
 ## 适用场景
 

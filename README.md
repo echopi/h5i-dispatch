@@ -12,7 +12,7 @@ cp -r h5i-dispatch ~/.agents/skills/   # 或你的 harness skills 目录
 ```
 
 ## 用法
-适用场景、主动识别信号、env 旋钮、实测坑、安全前提见 [SKILL.md](SKILL.md)。一把梭 helper：`scripts/dispatch.sh <qoder|pi|codex> <box-name> <task-file>`。内网发布走 ContextLab registry；GitHub clone 仅作源码安装/开发路径。
+适用场景、主动识别信号、env 旋钮、实测坑、安全前提见 [SKILL.md](SKILL.md)。一把梭 helper：`scripts/dispatch.sh <qoder|pi|codex> <box-name> <task-file>`。
 
 依赖：[h5i](https://github.com/h5i-dev/h5i) 0.3.x（box 模型）+ `timeout`/`gtimeout` + `rsync` + 至少一个 worker CLI（qoder / pi / codex）。
 
