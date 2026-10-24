@@ -110,6 +110,7 @@ class DispatchTest(unittest.TestCase):
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.assertEqual(result.returncode, expected, result.stdout)
         work = self.root / '.git/.h5i/env/human/test-box/work'
+        self.assertTrue((self.root / 'worker.jsonl').is_file(), result.stdout)
         calls = [json.loads(line) for line in (self.root / 'worker.jsonl').read_text().splitlines()]
         events = [json.loads(line) for line in (self.root / 'events.jsonl').read_text().splitlines()]
         if expected == 0:
