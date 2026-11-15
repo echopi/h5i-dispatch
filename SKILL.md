@@ -1,16 +1,16 @@
 ---
 name: h5i-dispatch
-version: 0.4.2
-description: 从主 session 把可隔离子任务后台派给另一个独立 agent（qoder/pi/codex）并行执行，worker 跑在 h5i box（受限 worktree + 策略 + host 侧 receipt）里，产物经 export 门人工复核后合入。触发：dispatch、派给另一个 agent、并行做 X、后台让 qoder/pi/codex 去做。
+version: 0.4.3
+description: 把可隔离子任务派给 h5i box 中的独立 worker CLI（qoder/pi/codex），经 export 门人工复核产物。用于明确 h5i box、其他 CLI 或 box 策略的后台派发；明确宿主原生新会话或原 session 续聊且不要求 box 时走宿主会话入口。
 ---
 
-# h5i-dispatch · 后台并行 agent 任务派发（h5i box 模型，v0.4.2）
+# h5i-dispatch · 后台并行 agent 任务派发（h5i box 模型，v0.4.3）
 
 ## 触发词
 
-- 派给另一个 agent、并行做 X、dispatch
-- 后台让 qoder/pi/codex 去做、让另一个 agent 写 X
-- 并行派一个 worker
+- 明确用 h5i box、worker CLI 或 box 策略派发
+- 后台让 qoder/pi/codex CLI 在 box 中执行
+- “跨 session”“后台 Codex”本身不决定后端；先按下方分流核宿主原生能力与用户意图
 - 主动识别：当手头活可拆成 ≥2 个互不相干、可隔离的子任务时，提示用户是否派 worker（只提示不自动派）
 
 把一个 **scope 清晰、可隔离**的子任务交给另一个独立 agent **后台并行**干，主 session 同时干别的。v0.4.0 起 worker 跑在 **h5i box**（[h5i](https://github.com/h5i-dev/h5i) 0.3.x 的受限开发环境：git worktree + pinned 策略 + host 侧 receipt）里；产物经 **export 门**（patch.diff + report.md + receipt.json）由主 session 人工复核后 `git apply`。旧版依赖的 `h5i msg` 消息总线已被上游在 0.3.x 移除，本版本不再使用。
@@ -44,16 +44,20 @@ worker 的探索中间过程保留在自身上下文，主 session 接收有界�
 ## Workflow 优先分流（先判再派）
 
 ```
-任务可并行？
-├─ 同当前 harness/session 内可完成（无需独立配额/独立 CLI）？
-│   └─ → 优先走当前 harness 的内置 subagent / background job / parallel tool
-├─ 跨 session / 跨 harness / 长耗时 / 需独立配额 / 需隔离工作目录？
-│   └─ → 走 h5i-dispatch
-│       ├─ 改动路径不相交？→ 可以派（并行安全）
-│       └─ 改动路径相交？→ 拆分到不相交，或放弃并行顺序做
-└─ 需要多家独立评审、无标准答案？
-    └─ → 走 cross-review（独立性是其内核）
+已授权的派发请求
+├─ 明确 h5i box / 其他 worker CLI / box 策略？
+│   └─ → h5i-dispatch；路径不相交才并行，export 后冻结
+├─ 明确宿主原生新会话 / 原 session 续聊，且不要求 box？
+│   └─ → 有对应工具时走宿主会话入口；缺工具则报告缺口，不静默换后端
+├─ 当前 harness 内置 subagent / background job / parallel tool 足够？
+│   └─ → 优先复用内置能力
+├─ 需要多家独立评审、无标准答案？
+│   └─ → 走 cross-review（独立性是其内核）
+└─ 执行方式不明且影响隔离、续聊或产物合同？
+    └─ → 澄清该选择，再派发
 ```
+
+新任务仍需明确授权。长耗时、跨 session 或独立工作目录不等于需要 box；宿主原生会话也不因此获得 h5i 的策略隔离。仅整理交接或原看板任务派单保持各自入口。
 
 ## 前置
 
